@@ -1,0 +1,90 @@
+(() => {
+  'use strict';
+  const $ = s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+  const host = window.chrome?.webview;
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+  let screen='', generation=0, busy=false, introTimer, toastTimer, folderTimer;
+  let nativeAwaiting=false, nativeLoadingStarted=false;
+  const wait=ms=>new Promise(r=>setTimeout(r,ms));
+  const send=command=>host?.postMessage(command);
+  function toast(title,message,error=false){clearTimeout(toastTimer);$('#toastTitle').textContent=title;$('#toastMessage').textContent=message;$('#toast').classList.toggle('is-error',error);$('#toast').classList.add('is-visible');toastTimer=setTimeout(()=>$('#toast').classList.remove('is-visible'),3500);}
+  function show(name){generation++;screen=name;clearTimeout(introTimer);$('#app').dataset.screen=name;$('#app').classList.remove('leaving');$$('.screen').forEach(el=>{const active=el.dataset.screenPanel===name;el.classList.toggle('is-active',active);el.inert=!active;el.setAttribute('aria-hidden',!active);});$$('.scene-bg').forEach(el=>el.classList.toggle('is-visible',el.classList.contains(`bg-${name}`)));window.LauncherEffects.scene(name);if(name==='auth')setTimeout(()=>{if(screen===name)$('#licenseKey').focus();},650);}
+  function intro(){if(busy)return;show('intro');const stage=$('#introStage');stage.getAnimations({subtree:true}).forEach(a=>{a.cancel();a.play();});introTimer=setTimeout(leaveIntro,reduced.matches?1800:6800);}
+  /* The desktop host owns the true startup splash. Once WebView2 becomes visible,
+     begin at the loading page so the native logo does not replay inside HTML. */
+  function resetUpdater(){
+    $('#updateProgress').style.width='0%';
+    $('#updatePercent').textContent='0%';
+    $('#updateStatus').textContent='Preparing Strinova launcher';
+    $$('#updateSteps li').forEach((el,i)=>{el.classList.toggle('is-complete',false);el.classList.toggle('is-current',i===0);});
+  }
+  async function runUpdater(){
+    if(nativeLoadingStarted)return;
+    nativeLoadingStarted=true; nativeAwaiting=false; busy=true;
+    const token=generation;
+    await progress('update',token,[['Preparing the launcher',0],['Checking interface version',25],['Loading local resources',55],['Everything is ready',100]],3000);
+    if(token!==generation)return;
+    busy=false;
+    await wait(350);
+    if(token===generation)show('auth');
+  }
+  async function startUpdater(fromNative=false){
+    if(busy && !nativeAwaiting)return;
+    clearTimeout(introTimer);
+    resetUpdater();
+    nativeLoadingStarted=false;
+    nativeAwaiting=Boolean(host && fromNative);
+    $('#app').classList.remove('leaving');
+    show('updater');
+    if(nativeAwaiting){send('ui-ready');return;}
+    return runUpdater();
+  }
+  async function leaveIntro(){if(screen!=='intro'||busy)return;busy=true;clearTimeout(introTimer);$('#app').classList.add('leaving');await wait(reduced.matches?0:620);busy=false;await startUpdater();}
+  async function progress(prefix,token,stages,duration){const start=performance.now();let value=0;do{if(token!==generation)return;value=Math.min(100,Math.round((performance.now()-start)/duration*100));$(`#${prefix}Progress`).style.width=`${value}%`;$(`#${prefix}Percent`).textContent=`${value}%`;$(`#${prefix}Status`).textContent=[...stages].reverse().find(s=>value>=s[1])[0];if(prefix==='update')$$('#updateSteps li').forEach((el,i)=>{el.classList.toggle('is-complete',value>=(i+1)*25);el.classList.toggle('is-current',Math.floor(value/26)===i);});if(value<100)await wait(40);}while(value<100);}
+  function loading(button,value,label){button.disabled=value;button.classList.toggle('is-loading',value);button.querySelector('.button-label').textContent=label;}
+  function error(input,message){input.closest('.input-wrap').classList.remove('is-error');requestAnimationFrame(()=>input.closest('.input-wrap').classList.add('is-error'));input.setAttribute('aria-invalid','true');input.focus();toast('One more thing',message,true);}
+  $('#skipIntro').onclick=leaveIntro;
+  function replayOpening(){
+    if(host){
+      if(busy && !nativeAwaiting && screen!=='updater'){toast('Just a moment','Wait for the current step to finish.');return;}
+      nativeAwaiting=true;nativeLoadingStarted=false;busy=true;resetUpdater();show('updater');send('replay-splash');return;
+    }
+    if(busy){toast('Just a moment','Wait for the current step to finish.');return;}intro();
+  }
+  $('#replayIntro').onclick=replayOpening;
+  document.addEventListener('keydown',e=>{if(e.key==='Enter'&&screen==='intro'&&!$('dialog[open]'))leaveIntro();});
+  $('#toggleKey').onclick=()=>{const input=$('#licenseKey'),visible=input.type==='password';input.type=visible?'text':'password';$('#toggleKey').classList.toggle('is-visible',visible);$('#toggleKey').setAttribute('aria-label',visible?'Ẩn license key':'Hiện license key');};
+  $$('.input-wrap input').forEach(input=>input.addEventListener('input',()=>{input.closest('.input-wrap').classList.remove('is-error');input.removeAttribute('aria-invalid');$('#keyError').textContent='';if(input.id==='gamePath'&&!busy){loading($('#installButton'),false,'INSTALL CHEAT');$('#installProgressBlock').classList.remove('is-visible');}}));
+  $('#loginForm').onsubmit=async e=>{e.preventDefault();if(busy)return;if(!$('#licenseKey').value.trim()){$('#keyError').textContent='Please enter a key.';error($('#licenseKey'),'Enter any test key to preview the launcher.');return;}busy=true;const token=generation;loading($('#loginButton'),true,'OPENING YOUR LAUNCHER');await wait(1100);if(token!==generation)return;$('#licenseKey').value='';loading($('#loginButton'),false,'LOGIN');busy=false;show('launcher');toast('You’re all set','Your Strinova launcher is ready.');};
+  function folderComplete(path){clearTimeout(folderTimer);busy=false;$('#browseButton').disabled=false;$('#browseButton').lastChild.textContent=' Browse';if(path){$('#gamePath').value=path;$('#gamePath').dispatchEvent(new Event('input'));toast('Folder selected','Your game directory is ready.');}}
+  $('#browseButton').onclick=()=>{if(busy)return;if(host){busy=true;$('#browseButton').disabled=true;send('pick-folder');folderTimer=setTimeout(()=>{folderComplete('');toast('Folder picker unavailable','You can enter a path manually.',true);},120000);}else{$('#gamePath').value='C:\\Games\\Strinova';$('#gamePath').dispatchEvent(new Event('input'));toast('Browser preview','Sample path selected. The desktop app opens Windows folders.');}};
+  $('#installButton').onclick=async()=>{if(busy)return;const path=$('#gamePath');if(!path.value.trim()){error(path,'Choose your game folder first.');return;}busy=true;const token=generation;$('#gamePath').disabled=true;$('#browseButton').disabled=true;$('#logoutButton').disabled=true;$('#installProgressBlock').classList.add('is-visible');loading($('#installButton'),true,'PREPARING PREVIEW');await progress('install',token,[['Previewing the selected directory',0],['Preparing the interface',30],['Finishing the preview',75],['Preview complete',100]],3300);if(token!==generation)return;loading($('#installButton'),false,'RUN PREVIEW AGAIN');$('#gamePath').disabled=false;$('#browseButton').disabled=false;$('#logoutButton').disabled=false;busy=false;toast('Preview complete','No game files were changed.');};
+  $('#logoutButton').onclick=()=>{if(busy)return;show('auth');$('#installProgressBlock').classList.remove('is-visible');};
+  const settings=$('#settingsDialog'), exit=$('#exitDialog');
+  function openDialog(d){if(!d)return;try{if(d.open)return;d.showModal();}catch{try{d.close();d.showModal();}catch{}}}
+  [settings,exit].forEach(d=>d.addEventListener('click',e=>{if(e.target===d)d.close();}));
+  $('#settingsButton').onclick=()=>{if(screen==='intro')clearTimeout(introTimer);openDialog(settings);};
+  $('#doneSettings').onclick=()=>settings.close();
+  $('#replayButton').onclick=()=>{settings.close();replayOpening();};
+  $('#closeButton').onclick=()=>openDialog(exit);
+  $('#cancelExit').onclick=()=>exit.close();
+  $('#confirmExit').onclick=()=>{exit.close();if(host)send('close');else toast('Browser preview','Close this browser tab to leave the preview.');};
+  $('#minimizeButton').onclick=()=>host?send('minimize'):toast('Browser preview','Window controls are active in the desktop app.');
+  $('#dragRegion').addEventListener('pointerdown',e=>{if(e.button===0)send('drag');});
+  const select=$('#qualitySelect'), options=$$('#qualityOptions [role=option]');
+  function openOptions(){select.setAttribute('aria-expanded','true');$('#qualityOptions').hidden=false;(options.find(o=>o.getAttribute('aria-selected')==='true')||options[0]).focus();}
+  function closeOptions(focus=true){select.setAttribute('aria-expanded','false');$('#qualityOptions').hidden=true;if(focus)select.focus();}
+  function quality(value){const option=options.find(o=>o.dataset.value===value)||options[0];options.forEach(o=>o.setAttribute('aria-selected',String(o===option)));$('#qualityValue').textContent=option.querySelector('b').textContent;window.LauncherEffects.quality(option.dataset.value);try{localStorage.setItem('vnc-motion',option.dataset.value);}catch{}}
+  select.onclick=()=>select.getAttribute('aria-expanded')==='true'?closeOptions():openOptions();select.onkeydown=e=>{if(['ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();openOptions();}};
+  options.forEach((o,i)=>{o.onclick=()=>{quality(o.dataset.value);closeOptions();};o.onkeydown=e=>{if(['ArrowDown','ArrowUp','Home','End','Enter',' ','Escape','Tab'].includes(e.key)){if(e.key!=='Tab')e.preventDefault();if(e.key==='Enter'||e.key===' '){quality(o.dataset.value);closeOptions();}else if(e.key==='Escape'){e.stopPropagation();closeOptions();}else if(e.key==='Tab')closeOptions(false);else options[e.key==='Home'?0:e.key==='End'?options.length-1:(i+(e.key==='ArrowDown'?1:-1)+options.length)%options.length].focus();}};});
+  document.addEventListener('pointerdown',e=>{if(!e.target.closest('.select-wrap'))closeOptions(false);});settings.addEventListener('close',()=>{closeOptions(false);if(screen==='intro'){clearTimeout(introTimer);introTimer=setTimeout(leaveIntro,5000);}});
+  document.addEventListener('visibilitychange',()=>window.LauncherEffects.pause(document.hidden));
+  if(host){host.addEventListener('message',e=>{if(typeof e.data!=='string')return;if(e.data==='begin-loading'){if(nativeAwaiting||!nativeLoadingStarted)runUpdater();}else if(e.data.startsWith('folder:'))folderComplete(e.data.slice(7));else if(e.data==='folder-cancelled')folderComplete('');else if(e.data==='folder-error'){folderComplete('');toast('Could not open folder picker','Enter the directory path manually.',true);}else if(e.data==='paused')window.LauncherEffects.pause(true);else if(e.data==='resumed')window.LauncherEffects.pause(false);});}
+  try{quality(reduced.matches?'still':localStorage.getItem('vnc-motion')||'cinematic');}catch{quality('cinematic');}
+  // Wait for the new user-provided backgrounds before the opening reveal starts.
+  Promise.all(['intro','updater','auth','launcher'].map(name=>new Promise(resolve=>{const img=new Image();img.onload=img.onerror=resolve;img.src=`assets/images/${name}.png`;}))).then(()=>{
+    /* Native WebView2 startup uses a transparent borderless splash rendered by C++.
+       Browser previews retain the cinematic HTML intro for easy visual review. */
+    if(host) startUpdater(true); else intro();
+  });
+})();

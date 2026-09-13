@@ -1,0 +1,5 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 110
+# Windows/GDI+/WebView2 SDK headers require their prerequisite headers first.
+SortIncludes: Never
